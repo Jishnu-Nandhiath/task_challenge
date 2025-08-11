@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: task-scheduler-db
+    environment:
+      POSTGRES_DB: task_scheduler
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - task-scheduler-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d task_scheduler"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Task Scheduler Application
+  app:
+    build: .
+    container_name: task-scheduler-app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@db:5432/task_scheduler
+      SQL_ECHO: "false"
+      LOG_LEVEL: info
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - task-scheduler-network
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Networks
+networks:
+  task-scheduler-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
