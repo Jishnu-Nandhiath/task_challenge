@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
   db:
     image: postgres:15-alpine
     container_name: task-scheduler-db
@@ -11,6 +10,7 @@ services:
       POSTGRES_PASSWORD: password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
     networks:
@@ -21,7 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Task Scheduler Application
   app:
     build: .
     container_name: task-scheduler-app
@@ -46,7 +45,6 @@ services:
       retries: 3
       start_period: 40s
 
-# Networks
 networks:
   task-scheduler-network:
     driver: bridge

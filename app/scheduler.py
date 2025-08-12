@@ -67,10 +67,8 @@ class SchedulerService:
         
         logger.info("Starting SchedulerService...")
         
-        # Initialize executor
         await self.executor.start()
         
-        # Load existing active tasks from database
         await self._load_active_tasks()
         
         # Start the main scheduler loop
@@ -158,7 +156,7 @@ class SchedulerService:
             
             # Note: We don't remove from heap immediately as it's expensive
             # The scheduler loop will skip tasks that are no longer active
-            
+        
             logger.info(f"Removed task {task_id} from scheduler")
         
         # Clear next execution time in database
@@ -188,19 +186,15 @@ class SchedulerService:
         try:
             while self.is_running:
                 try:
-                    # Clean up completed tasks from heap
                     self._cleanup_heap()
-                    
-                    # Check if we have tasks to execute
+
                     if not self.task_queue:
-                        # No tasks, wait for new tasks or shutdown
                         await self._wait_for_tasks_or_shutdown()
                         continue
-                    
-                    # Get the next task
+
                     next_task = self.task_queue[0]
                     current_time = datetime.now(pytz.utc)
-                    
+
                     # Check if task is still active
                     if next_task.task_id not in self.active_tasks:
                         heapq.heappop(self.task_queue)
@@ -208,27 +202,21 @@ class SchedulerService:
                     
                     # Check if it's time to execute
                     if next_task.execute_at <= current_time:
-                        # Remove from queue and execute
                         task = heapq.heappop(self.task_queue)
                         
-                        # Check concurrent task limit
                         if len(self.running_tasks) >= self.max_concurrent_tasks:
-                            # Put task back and wait a bit
                             heapq.heappush(self.task_queue, task)
                             await asyncio.sleep(self.scheduler_tick_interval)
                             continue
                         
-                        # Execute the task
                         asyncio.create_task(self._execute_and_reschedule(task))
                     else:
-                        # Calculate sleep time until next task
                         sleep_time = min(
                             (next_task.execute_at - current_time).total_seconds(),
                             self.scheduler_tick_interval
                         )
                         
                         if sleep_time > 0:
-                            # Wait for next execution time or new task
                             await self._wait_with_events(sleep_time)
                 
                 except Exception as e:
@@ -260,7 +248,10 @@ class SchedulerService:
             # Handle rescheduling for recurring tasks
             if scheduled_task.is_recurring and task_id in self.active_tasks:
                 await self._reschedule_recurring_task(scheduled_task)
-        
+
+            scheduler_status = await self.get_scheduler_status()
+            logger.info(f"Scheduler status after task {task_id} execution: {scheduler_status}")
+            
         except Exception as e:
             logger.error(f"Error executing task {task_id}: {e}", exc_info=True)
             
@@ -289,13 +280,13 @@ class SchedulerService:
             task_schedule=task_schedule,
             is_recurring=True
         )
-        
-        # Add back to queue
+
         heapq.heappush(self.task_queue, new_scheduled_task)
         self.active_tasks[task_schedule.id] = new_scheduled_task
         
-        # Update database
         await self._update_next_execution_time(task_schedule.id, next_execution)
+        
+        self.new_task_event.set()
         
         logger.info(f"Rescheduled recurring task {task_schedule.id} for {next_execution}")
     
@@ -304,21 +295,27 @@ class SchedulerService:
         current_time = datetime.now(pytz.utc)
         
         if task_schedule.scheduled_at:
-            # One-time scheduled task
-            if task_schedule.scheduled_at > current_time:
-                return task_schedule.scheduled_at
+            scheduled_at = task_schedule.scheduled_at
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=pytz.utc)
+            
+            if scheduled_at > current_time:
+                logger.info(f"One-time task {task_schedule.id} scheduled for {scheduled_at}")
+                return scheduled_at
             else:
+                logger.info(f"One-time task {task_schedule.id} past due ({scheduled_at}), skipping")
                 return None  # Past due, don't execute
         
         elif task_schedule.interval_seconds:
-            # Recurring task
             if task_schedule.last_executed_at:
-                # Schedule from last execution
-                return task_schedule.last_executed_at + timedelta(seconds=task_schedule.interval_seconds)
+                next_time = task_schedule.last_executed_at + timedelta(seconds=task_schedule.interval_seconds)
+                logger.info(f"Recurring task {task_schedule.id}: last_executed={task_schedule.last_executed_at}, interval={task_schedule.interval_seconds}s, next={next_time}")
+                return next_time
             else:
-                # First execution - schedule for now
+                logger.info(f"Recurring task {task_schedule.id} never executed, scheduling immediately")
                 return current_time
         
+        logger.warning(f"Task {task_schedule.id} has no scheduling configuration")
         return None
     
     async def _load_active_tasks(self):
@@ -342,33 +339,35 @@ class SchedulerService:
                     heapq.heappush(self.task_queue, scheduled_task)
                     self.active_tasks[task_schedule.id] = scheduled_task
                     
-                    # Update next execution time in database
                     await self._update_next_execution_time(task_schedule.id, next_execution)
         
         logger.info(f"Loaded {len(self.active_tasks)} active tasks from database")
     
     async def _update_next_execution_time(self, task_id: int, next_execution: Optional[datetime]):
         """Update the next_execution_at field in the database"""
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(TaskSchedule).where(TaskSchedule.id == task_id)
-            )
-            task_schedule = result.scalar_one_or_none()
-            
-            if task_schedule:
-                task_schedule.next_execution_at = next_execution
-                await db.commit()
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(TaskSchedule).where(TaskSchedule.id == task_id)
+                )
+                task_schedule = result.scalar_one_or_none()
+                
+                if task_schedule:
+                    task_schedule.next_execution_at = next_execution
+                    await db.commit()
+                    logger.debug(f"Updated next_execution_at for task {task_id} to {next_execution}")
+                else:
+                    logger.warning(f"Task {task_id} not found when updating next_execution_at")
+        except Exception as e:
+            logger.error(f"Failed to update next_execution_at for task {task_id}: {e}", exc_info=True)
     
     def _cleanup_heap(self):
         """Remove inactive tasks from the heap"""
-        # This is an expensive operation, so we only do it periodically
-        # Filter out tasks that are no longer active
         active_heap_tasks = [
             task for task in self.task_queue 
             if task.task_id in self.active_tasks
         ]
         
-        # Only rebuild if we removed tasks
         if len(active_heap_tasks) < len(self.task_queue):
             self.task_queue = active_heap_tasks
             heapq.heapify(self.task_queue)
@@ -390,11 +389,9 @@ class SchedulerService:
                 return_when=asyncio.FIRST_COMPLETED
             )
             
-            # Cancel pending tasks
             for task in pending:
                 task.cancel()
             
-            # Clear the new task event if it was set
             if not self.shutdown_event.is_set():
                 self.new_task_event.clear()
                 
@@ -413,7 +410,6 @@ class SchedulerService:
                 return_when=asyncio.FIRST_COMPLETED
             )
             
-            # Cancel pending tasks
             for task in pending:
                 task.cancel()
             

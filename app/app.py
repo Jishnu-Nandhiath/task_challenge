@@ -9,13 +9,12 @@ from typing import List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 import pytz
 
-from app.models import get_db, init_db
+from app.models import get_db, sync_engine
 from app.models import TaskSchedule, TaskExecution, TaskType
 from app.schema import (
     TaskScheduleCreate,
@@ -25,8 +24,8 @@ from app.schema import (
     UpcomingExecutionResponse
 )
 from app.scheduler import SchedulerService
+from app.admin import setup_admin
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -35,12 +34,7 @@ scheduler_service = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler"""
     global scheduler_service
-    
-    # Startup
-    logger.info("Initializing database...")
-    await init_db()
     
     logger.info("Starting scheduler service...")
     scheduler_service = SchedulerService()
@@ -48,7 +42,6 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown
     logger.info("Stopping scheduler service...")
     if scheduler_service:
         await scheduler_service.stop()
@@ -60,14 +53,8 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+admin = setup_admin(app, sync_engine)
 
 
 @app.post("/tasks", response_model=TaskScheduleResponse)
@@ -75,16 +62,13 @@ async def create_task(
     task: TaskScheduleCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new scheduled task"""
     try:
-        # Validate task type
         if task.task_type not in [TaskType.SLEEP, TaskType.COUNTER, TaskType.HTTP]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid task type. Must be one of: {[t.value for t in TaskType]}"
             )
         
-        # Create task schedule
         db_task = TaskSchedule(
             name=task.name,
             description=task.description,
@@ -93,15 +77,12 @@ async def create_task(
             scheduled_at=task.scheduled_at,
             task_config=task.task_config or {},
             is_active=True,
-            created_at=datetime.now(pytz.utc),
-            updated_at=datetime.now(pytz.utc)
         )
         
         db.add(db_task)
         await db.commit()
         await db.refresh(db_task)
         
-        # Add to scheduler if active
         if db_task.is_active and scheduler_service:
             await scheduler_service.add_task(db_task)
         
@@ -144,7 +125,6 @@ async def update_task(
         raise HTTPException(status_code=404, detail="Task not found")
     
     try:
-        # Update fields if provided
         if task_update.name is not None:
             db_task.name = task_update.name
         if task_update.description is not None:
@@ -163,7 +143,6 @@ async def update_task(
         await db.commit()
         await db.refresh(db_task)
         
-        # Update scheduler
         if scheduler_service:
             if db_task.is_active:
                 await scheduler_service.update_task(db_task)
@@ -191,11 +170,9 @@ async def delete_task(task_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Task not found")
     
     try:
-        # Remove from scheduler
         if scheduler_service:
             await scheduler_service.remove_task(task_id)
         
-        # Delete from database
         await db.delete(db_task)
         await db.commit()
         
@@ -234,7 +211,6 @@ async def get_upcoming_executions(
     db: AsyncSession = Depends(get_db)
 ):
     """Get upcoming executions for a specific task"""
-    # First check if task exists
     result = await db.execute(
         select(TaskSchedule).where(TaskSchedule.id == task_id)
     )
@@ -250,7 +226,6 @@ async def get_upcoming_executions(
     current_time = datetime.now(pytz.utc)
     
     if task.scheduled_at:
-        # One-time scheduled task
         if task.scheduled_at > current_time:
             upcoming.append(UpcomingExecutionResponse(
                 task_id=task.id,
@@ -259,7 +234,6 @@ async def get_upcoming_executions(
                 task_type=task.task_type
             ))
     elif task.interval_seconds:
-        # Recurring task - calculate next executions
         next_time = current_time
         for _ in range(count):
             next_time = next_time + timedelta(seconds=task.interval_seconds)
@@ -319,13 +293,3 @@ async def health_check():
         "scheduler": scheduler_status,
         "timestamp": datetime.now(pytz.utc).isoformat()
     }
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "app.app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,  # Enable reload for development
-        log_level="info"
-    )

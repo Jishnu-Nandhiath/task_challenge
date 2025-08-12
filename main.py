@@ -9,7 +9,7 @@ def main():
         "app.app:app",
         host="0.0.0.0",
         port=8000,
-        reload=False,  # Disable reload in production/Docker
+        reload=True,
         log_level="info"
     )
 

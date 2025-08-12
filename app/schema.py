@@ -4,10 +4,13 @@ Pydantic schemas for request/response validation
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import TaskType, ExecutionStatus
 import pytz
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class TaskScheduleBase(BaseModel):
     """Base schema for task schedules"""
@@ -32,8 +35,12 @@ class TaskScheduleCreate(TaskScheduleBase):
     @field_validator('scheduled_at')
     @classmethod
     def validate_scheduled_at(cls, v):
-        if v and v <= datetime.now(pytz.utc):
-            raise ValueError("scheduled_at must be in the future")
+        if v:           
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=pytz.utc)
+            
+            if v <= datetime.now(pytz.utc):
+                raise ValueError("scheduled_at must be in the future")
         return v
     
     @field_validator('task_config')
@@ -59,16 +66,14 @@ class TaskScheduleCreate(TaskScheduleBase):
                 
         return v
     
-    @field_validator('interval_seconds')
-    @classmethod
-    def validate_scheduling(cls, v, info):
-        """Ensure either interval_seconds or scheduled_at is provided"""
-        scheduled_at = info.data.get('scheduled_at') if info.data else None
-        if not v and not scheduled_at:
+    @model_validator(mode='after')
+    def validate_scheduling(self):
+        """Ensure either interval_seconds or scheduled_at is provided"""        
+        if not self.interval_seconds and not self.scheduled_at:
             raise ValueError("Either interval_seconds or scheduled_at must be provided")
-        if v and scheduled_at:
+        if self.interval_seconds and self.scheduled_at:
             raise ValueError("Cannot specify both interval_seconds and scheduled_at")
-        return v
+        return self
 
 
 class TaskScheduleUpdate(BaseModel):
@@ -83,8 +88,12 @@ class TaskScheduleUpdate(BaseModel):
     @field_validator('scheduled_at')
     @classmethod
     def validate_scheduled_at(cls, v):
-        if v and v <= datetime.now(pytz.utc):
-            raise ValueError("scheduled_at must be in the future")
+        if v:
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=pytz.utc)
+            
+            if v <= datetime.now(pytz.utc):
+                raise ValueError("scheduled_at must be in the future")
         return v
 
 

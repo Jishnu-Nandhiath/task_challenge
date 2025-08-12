@@ -12,5 +12,6 @@ dependencies = [
     "pytz>=2025.2",
     "requests>=2.31.0",
     "sqlalchemy>=2.0.43",
+    "sqladmin>=0.21.0",
     "uvicorn>=0.35.0",
 ]

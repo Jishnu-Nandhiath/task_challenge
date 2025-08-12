@@ -8,27 +8,32 @@ from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, create_engine
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 import pytz
 
 Base = declarative_base()
 
-# Database configuration
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
-    "postgresql+asyncpg://postgres:password@localhost:5432/task_scheduler"
+    "postgresql+asyncpg://postgres:password@db:5432/task_scheduler"
 )
 
-# Create async engine
+
 engine = create_async_engine(
     DATABASE_URL,
     echo=os.getenv("SQL_ECHO", "false").lower() == "true",
-    poolclass=NullPool,  # Use NullPool for async connections
+    poolclass=NullPool, 
 )
 
-# Create session factory
+
+SYNC_DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+sync_engine = create_engine(
+    SYNC_DATABASE_URL,
+    echo=os.getenv("SQL_ECHO", "false").lower() == "true",
+)
+
 AsyncSessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -63,20 +68,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def init_db():
-    """Initialize database tables"""
-    async with engine.begin() as conn:
-        # Create all tables
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def close_db():
-    """Close database engine"""
     await engine.dispose()
 
 
 class TaskSchedule(Base):
-    """Model for scheduled tasks"""
     __tablename__ = "task_schedules"
     
     id = Column(Integer, primary_key=True, index=True)
@@ -84,21 +80,17 @@ class TaskSchedule(Base):
     description = Column(Text, nullable=True)
     task_type = Column(Enum(TaskType), nullable=False)
     
-    # Scheduling configuration
     interval_seconds = Column(Integer, nullable=True)  # For recurring tasks
-    scheduled_at = Column(DateTime, nullable=True)     # For one-time tasks
-    
-    # Task configuration (JSON field for task-specific parameters)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)     # For one-time tasks
+
     task_config = Column(JSON, nullable=True, default=dict)
     
-    # Status and metadata
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.now(pytz.utc), nullable=False)
-    updated_at = Column(DateTime, default=datetime.now(pytz.utc), onupdate=datetime.now(pytz.utc), nullable=False)
-    last_executed_at = Column(DateTime, nullable=True)
-    next_execution_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.now(pytz.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.now(pytz.utc), onupdate=datetime.now(pytz.utc), nullable=False)
+    last_executed_at = Column(DateTime(timezone=True), nullable=True)
+    next_execution_at = Column(DateTime(timezone=True), nullable=True)
     
-    # Relationships
     executions = relationship("TaskExecution", back_populates="task_schedule", cascade="all, delete-orphan")
     
     def __repr__(self):
@@ -112,19 +104,17 @@ class TaskExecution(Base):
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("task_schedules.id"), nullable=False, index=True)
     
-    # Execution details
     status = Column(Enum(ExecutionStatus), default=ExecutionStatus.PENDING, nullable=False)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
     
-    # Results and output
-    result_data = Column(JSON, nullable=True, default=dict)  # Task-specific results
+    result_data = Column(JSON, nullable=True, default=dict)
     error_message = Column(Text, nullable=True)
     
-    # Performance metrics
-    execution_time_ms = Column(Integer, nullable=True)  # Duration in milliseconds
+
+    execution_time_ms = Column(Integer, nullable=True)
     
-    # Relationships
+
     task_schedule = relationship("TaskSchedule", back_populates="executions")
     
     @property
@@ -145,7 +135,7 @@ class CounterState(Base):
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("task_schedules.id"), nullable=False, unique=True, index=True)
     counter_value = Column(Integer, default=0, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.now(pytz.utc), onupdate=datetime.now(pytz.utc), nullable=False)
     
     def __repr__(self):
         return f"<CounterState(task_id={self.task_id}, value={self.counter_value})>"
