@@ -2,6 +2,7 @@
 Admin interface using SQLAdmin for automatic admin panel generation
 """
 from sqladmin import Admin, ModelView
+
 from app.models import TaskSchedule, TaskExecution, CounterState
 
 

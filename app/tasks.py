@@ -7,10 +7,10 @@ from typing import Dict, Any
 import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+import pytz
 
 from app.models import TaskSchedule, TaskExecution, CounterState, TaskType, ExecutionStatus
 from app.models import AsyncSessionLocal
-import pytz
 
 logger = logging.getLogger(__name__)
 

@@ -8,14 +8,15 @@ import logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, Set, Optional, Any
+
 from sqlalchemy.future import select
 import pytz
 
 from app.models import TaskSchedule, AsyncSessionLocal
 from app.tasks import TaskExecutor
 
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ScheduledTask:
@@ -251,7 +252,7 @@ class SchedulerService:
 
             scheduler_status = await self.get_scheduler_status()
             logger.info(f"Scheduler status after task {task_id} execution: {scheduler_status}")
-            
+
         except Exception as e:
             logger.error(f"Error executing task {task_id}: {e}", exc_info=True)
             
